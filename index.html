@@ -1,0 +1,369 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>太陽系モデル (太陽光強度改善)</title>
+    <style>
+        body { margin: 0; overflow: hidden; font-family: Arial, sans-serif; background-color: #000; color: #fff;}
+        canvas { display: block; }
+        #controlsContainer {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            padding: 10px;
+            background-color: rgba(50, 50, 50, 0.75);
+            border-radius: 5px;
+            color: #fff;
+            z-index: 10;
+        }
+        #controlsContainer label {
+            display: block;
+            margin-top: 8px;
+            margin-bottom: 3px;
+        }
+        #controlsContainer input[type="range"] {
+            width: 180px;
+        }
+        #controlsContainer span {
+            display: inline-block;
+            min-width: 35px;
+            text-align: right;
+            font-size: 0.9em;
+        }
+        #controlsContainer h4 {
+            margin-top: 5px;
+            margin-bottom: 5px;
+            font-size: 1.1em;
+        }
+    </style>
+</head>
+<body>
+    <div id="controlsContainer">
+        <h4>全体設定</h4>
+        <div>
+            <label for="speedControl">速度: <span id="speedValue">1.0</span>x</label>
+            <input type="range" id="speedControl" min="0.1" max="5" step="0.1" value="1">
+        </div>
+        <h4>光源と輝き</h4>
+        <div>
+            <label for="sunIntensityControl">太陽光/輝度: <span id="sunIntensityValue">1.5</span></label> <input type="range" id="sunIntensityControl" min="0.1" max="5" step="0.1" value="1.5">
+        </div>
+        <div>
+            <label for="planetEmissiveControl">惑星輝き: <span id="planetEmissiveValue">0.05</span></label>
+            <input type="range" id="planetEmissiveControl" min="0" max="1.5" step="0.05" value="0.05">
+        </div>
+        <h4>ブルーム効果</h4>
+        <div>
+            <label for="bloomStrengthControl">強度: <span id="bloomStrengthValue">1.2</span></label>
+            <input type="range" id="bloomStrengthControl" min="0" max="3" step="0.1" value="1.2">
+        </div>
+        <div>
+            <label for="bloomRadiusControl">半径: <span id="bloomRadiusValue">0.5</span></label>
+            <input type="range" id="bloomRadiusControl" min="0" max="2" step="0.05" value="0.5">
+        </div>
+        <div>
+            <label for="bloomThresholdControl">しきい値: <span id="bloomThresholdValue">0.9</span></label>
+            <input type="range" id="bloomThresholdControl" min="0" max="1" step="0.01" value="0.9">
+        </div>
+    </div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+    
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/postprocessing/Pass.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/shaders/CopyShader.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/shaders/LuminosityHighPassShader.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/postprocessing/ShaderPass.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/postprocessing/EffectComposer.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/postprocessing/RenderPass.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/postprocessing/UnrealBloomPass.js"></script>
+
+
+    <script>
+        // --- グローバル変数 ---
+        let simulationSpeedFactor = 1.0;
+        let sunInitialIntensity = 1.5; // この値が太陽の点光源と自己発光の初期強度になる
+        let planetInitialEmissiveIntensity = 0.05;
+        let bloomPass;
+        let composer;
+        let sun; // sunメッシュをグローバルスコープでアクセス可能に
+
+        // --- UI要素の取得とイベントリスナー設定 ---
+        const speedControl = document.getElementById('speedControl');
+        const speedValueDisplay = document.getElementById('speedValue');
+        const sunIntensityControl = document.getElementById('sunIntensityControl');
+        const sunIntensityValueDisplay = document.getElementById('sunIntensityValue');
+        const planetEmissiveControl = document.getElementById('planetEmissiveControl');
+        const planetEmissiveValueDisplay = document.getElementById('planetEmissiveValue');
+        const bloomStrengthControl = document.getElementById('bloomStrengthControl');
+        const bloomStrengthValueDisplay = document.getElementById('bloomStrengthValue');
+        const bloomRadiusControl = document.getElementById('bloomRadiusControl');
+        const bloomRadiusValueDisplay = document.getElementById('bloomRadiusValue');
+        const bloomThresholdControl = document.getElementById('bloomThresholdControl');
+        const bloomThresholdValueDisplay = document.getElementById('bloomThresholdValue');
+
+        speedControl.addEventListener('input', (event) => {
+            simulationSpeedFactor = parseFloat(event.target.value);
+            speedValueDisplay.textContent = simulationSpeedFactor.toFixed(1);
+        });
+        sunIntensityControl.addEventListener('input', (event) => {
+            const newIntensity = parseFloat(event.target.value);
+            pointLight.intensity = newIntensity;
+            if (sun && sun.material.isMeshStandardMaterial) { // ★ 太陽のマテリアルの自己発光強度も更新
+                sun.material.emissiveIntensity = newIntensity;
+            }
+            sunIntensityValueDisplay.textContent = newIntensity.toFixed(1);
+        });
+        planetEmissiveControl.addEventListener('input', (event) => {
+            const newIntensity = parseFloat(event.target.value);
+            planetEmissiveValueDisplay.textContent = newIntensity.toFixed(2);
+            planetObjects.forEach(p => {
+                if (p.mesh.material.isMeshPhongMaterial) {
+                    p.mesh.material.emissiveIntensity = newIntensity;
+                }
+                p.moons.forEach(m => {
+                     if (m.mesh.material.isMeshPhongMaterial) {
+                        m.mesh.material.emissiveIntensity = newIntensity;
+                    }
+                });
+            });
+        });
+        bloomStrengthControl.addEventListener('input', (event) => {
+            if (bloomPass) bloomPass.strength = parseFloat(event.target.value);
+            bloomStrengthValueDisplay.textContent = parseFloat(event.target.value).toFixed(1);
+        });
+        bloomRadiusControl.addEventListener('input', (event) => {
+            if (bloomPass) bloomPass.radius = parseFloat(event.target.value);
+            bloomRadiusValueDisplay.textContent = parseFloat(event.target.value).toFixed(2);
+        });
+        bloomThresholdControl.addEventListener('input', (event) => {
+            if (bloomPass) bloomPass.threshold = parseFloat(event.target.value);
+            bloomThresholdValueDisplay.textContent = parseFloat(event.target.value).toFixed(2);
+        });
+
+
+        // --- Three.js 初期化 ---
+        const scene = new THREE.Scene();
+        const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 4000);
+        const renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.toneMapping = THREE.ReinhardToneMapping;
+        renderer.toneMappingExposure = 1.0;
+        renderer.outputEncoding = THREE.sRGBEncoding;
+        document.body.appendChild(renderer.domElement);
+
+        camera.position.set(0, 80, 180);
+        camera.lookAt(0, 0, 0);
+
+        const controls = new THREE.OrbitControls(camera, renderer.domElement);
+        controls.enableDamping = true;
+        controls.dampingFactor = 0.05;
+        controls.minDistance = 10;
+        controls.maxDistance = 2000;
+
+        // 光源
+        const ambientLight = new THREE.AmbientLight(0x282828);
+        scene.add(ambientLight);
+
+        const pointLight = new THREE.PointLight(0xffffff, sunInitialIntensity, 3000);
+        scene.add(pointLight);
+
+        // 星空の背景
+        const starGeometry = new THREE.SphereGeometry(3000, 64, 64);
+        const starMaterial = new THREE.MeshBasicMaterial({ color: 0x000005, side: THREE.BackSide });
+        const starField = new THREE.Mesh(starGeometry, starMaterial);
+        scene.add(starField);
+
+        // ★★★ 太陽のマテリアルをMeshStandardMaterialに変更 ★★★
+        const sunColor = 0xffcc33; // オレンジイエロー
+        const sunGeometry = new THREE.SphereGeometry(12, 64, 64);
+        const sunMaterial = new THREE.MeshStandardMaterial({
+            color: sunColor,         // 基本色
+            emissive: sunColor,      // 自己発光色 (基本色と同じか、少し明るい色でも良い)
+            emissiveIntensity: sunInitialIntensity, // 自己発光強度 (点光源の初期強度と合わせる)
+            metalness: 0.1,          // 金属っぽさを少しだけ (0に近いほど非金属)
+            roughness: 0.7           // 表面の粗さ (1に近いほどザラザラ)
+        });
+        sun = new THREE.Mesh(sunGeometry, sunMaterial); // sun 変数に代入
+        scene.add(sun);
+        pointLight.position.set(0, 0, 0);
+
+        // --- ポストプロセッシング設定 ---
+        composer = new THREE.EffectComposer(renderer);
+        const renderPass = new THREE.RenderPass(scene, camera);
+        composer.addPass(renderPass);
+
+        if (THREE.LuminosityHighPassShader) {
+            bloomPass = new THREE.UnrealBloomPass(
+                new THREE.Vector2(window.innerWidth, window.innerHeight),
+                parseFloat(bloomStrengthControl.value),
+                parseFloat(bloomRadiusControl.value),
+                parseFloat(bloomThresholdControl.value)
+            );
+            composer.addPass(bloomPass);
+        } else {
+            console.error("THREE.LuminosityHighPassShader is not defined! UnrealBloomPass cannot be initialized.");
+        }
+
+        // 惑星データ (変更なし)
+        const planetsData = [
+            { name: "Mercury", size: 0.5, distance: 30, speedFactor: 4.15, colorHex: 0x888888, moons: [] },
+            { name: "Venus", size: 0.95, distance: 45, speedFactor: 1.62, colorHex: 0xf4a460, moons: [] },
+            { name: "Earth", size: 1.0, distance: 60, speedFactor: 1.00, colorHex: 0x2090ff,
+                moons: [ { name: "Moon", size: 0.27, distance: 3.2, speedFactor: 12, colorHex: 0xc0c0c0 } ]
+            },
+            { name: "Mars", size: 0.7, distance: 80, speedFactor: 0.53, colorHex: 0xff4500, moons: [] },
+            { name: "Jupiter", size: 6.0, distance: 160, speedFactor: 0.084, colorHex: 0xd2b48c,
+                moons: [
+                    { name: "Io", size: 0.4, distance: 8, speedFactor: 8, colorHex: 0xfefc7d },
+                    { name: "Europa", size: 0.35, distance: 9.5, speedFactor: 6, colorHex: 0xadd8e6 },
+                ]
+            },
+            { name: "Saturn", size: 5.0, distance: 240, speedFactor: 0.034, colorHex: 0xfbeab8,
+                rings: { innerRadius: 6, outerRadius: 11, colorHex: 0xad9f80, segments: 64, opacity: 0.45 },
+                moons: [ { name: "Titan", size: 0.5, distance: 13, speedFactor: 3, colorHex: 0xb08d57 } ]
+            },
+            { name: "Uranus", size: 2.8, distance: 320, speedFactor: 0.012, colorHex: 0x66cccc,
+               rings: { innerRadius: 3.5, outerRadius: 5, colorHex: 0x778899, segments: 32, opacity: 0.3 },
+            },
+            { name: "Neptune", size: 2.7, distance: 400, speedFactor: 0.006, colorHex: 0x3366cc, },
+        ];
+
+        const planetObjects = [];
+        const baseOrbitSpeed = 0.001;
+
+        // 惑星と衛星の作成 (変更なし)
+        planetsData.forEach(pData => {
+            const planetGroup = new THREE.Group();
+            scene.add(planetGroup);
+
+            const planetMaterial = new THREE.MeshPhongMaterial({
+                color: pData.colorHex,
+                shininess: 15,
+                emissive: new THREE.Color(pData.colorHex),
+                emissiveIntensity: planetInitialEmissiveIntensity
+            });
+            const planetGeometry = new THREE.SphereGeometry(pData.size, 32, 32);
+            const planetMesh = new THREE.Mesh(planetGeometry, planetMaterial);
+            planetGroup.add(planetMesh);
+
+            const orbitPoints = [];
+            for (let i = 0; i <= 128; i++) {
+                const angle = (i / 128) * Math.PI * 2;
+                orbitPoints.push(new THREE.Vector3(Math.cos(angle) * pData.distance, 0, Math.sin(angle) * pData.distance));
+            }
+            const orbitGeometry = new THREE.BufferGeometry().setFromPoints(orbitPoints);
+            const orbitMaterial = new THREE.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.08 });
+            const orbitLine = new THREE.Line(orbitGeometry, orbitMaterial);
+            scene.add(orbitLine);
+
+            const currentPlanetData = {
+                group: planetGroup, mesh: planetMesh,
+                baseOrbitSpeedVal: baseOrbitSpeed / pData.speedFactor,
+                orbitAngle: Math.random() * Math.PI * 2, distance: pData.distance,
+                baseSelfRotationSpeedVal: pData.size > 0.5 ? 0.0025 / pData.size : 0.007,
+                moons: [],
+            };
+
+            if (pData.moons && pData.moons.length > 0) {
+                pData.moons.forEach(mDat => {
+                    const moonMaterial = new THREE.MeshPhongMaterial({
+                        color: mDat.colorHex,
+                        shininess: 8,
+                        emissive: new THREE.Color(mDat.colorHex),
+                        emissiveIntensity: planetInitialEmissiveIntensity
+                    });
+                    const moonGeometry = new THREE.SphereGeometry(mDat.size, 16, 16);
+                    const moonMesh = new THREE.Mesh(moonGeometry, moonMaterial);
+                    planetGroup.add(moonMesh);
+
+                    const moonOrbitPoints = [];
+                    for (let i = 0; i <= 64; i++) {
+                        const angle = (i / 64) * Math.PI * 2;
+                        moonOrbitPoints.push(new THREE.Vector3(Math.cos(angle) * mDat.distance, 0, Math.sin(angle) * mDat.distance));
+                    }
+                    const moonOrbitGeometry = new THREE.BufferGeometry().setFromPoints(moonOrbitPoints);
+                    const moonOrbitMaterial = new THREE.LineBasicMaterial({ color: 0xaaaaaa, transparent: true, opacity: 0.1 });
+                    const moonOrbitLine = new THREE.Line(moonOrbitGeometry, moonOrbitMaterial);
+                    planetGroup.add(moonOrbitLine);
+
+                    currentPlanetData.moons.push({
+                        mesh: moonMesh,
+                        baseOrbitSpeedVal: (baseOrbitSpeed * 7) / mDat.speedFactor,
+                        orbitAngle: Math.random() * Math.PI * 2, distance: mDat.distance,
+                        baseSelfRotationSpeedVal: 0.007
+                    });
+                });
+            }
+
+            if (pData.rings) {
+                const ringMaterial = new THREE.MeshBasicMaterial({
+                    color: pData.rings.colorHex, side: THREE.DoubleSide, transparent: true, opacity: pData.rings.opacity
+                });
+                const ringGeometry = new THREE.RingGeometry(
+                    pData.rings.innerRadius, pData.rings.outerRadius, pData.rings.segments
+                );
+                const ringMesh = new THREE.Mesh(ringGeometry, ringMaterial);
+                ringMesh.rotation.x = Math.PI / 2;
+                planetGroup.add(ringMesh);
+            }
+            planetObjects.push(currentPlanetData);
+        });
+
+
+        // --- アニメーションループ ---
+        function animate() {
+            requestAnimationFrame(animate);
+            sun.rotation.y += 0.00025 * simulationSpeedFactor;
+            planetObjects.forEach(p => {
+                const currentOrbitSpeed = p.baseOrbitSpeedVal * simulationSpeedFactor;
+                const currentSelfRotationSpeed = p.baseSelfRotationSpeedVal * simulationSpeedFactor;
+                p.orbitAngle += currentOrbitSpeed;
+                p.group.position.x = Math.cos(p.orbitAngle) * p.distance;
+                p.group.position.z = Math.sin(p.orbitAngle) * p.distance;
+                p.mesh.rotation.y += currentSelfRotationSpeed;
+                p.moons.forEach(m => {
+                    const currentMoonOrbitSpeed = m.baseOrbitSpeedVal * simulationSpeedFactor;
+                    const currentMoonSelfRotationSpeed = m.baseSelfRotationSpeedVal * simulationSpeedFactor;
+                    m.orbitAngle += currentMoonOrbitSpeed;
+                    m.mesh.position.set( Math.cos(m.orbitAngle) * m.distance, 0, Math.sin(m.orbitAngle) * m.distance );
+                    m.mesh.rotation.y += currentMoonSelfRotationSpeed;
+                });
+            });
+            controls.update();
+            if (composer) {
+                composer.render();
+            }
+        }
+        
+        function initializeUIDisplay() {
+            speedValueDisplay.textContent = parseFloat(speedControl.value).toFixed(1);
+            sunIntensityValueDisplay.textContent = parseFloat(sunIntensityControl.value).toFixed(1);
+            planetEmissiveValueDisplay.textContent = parseFloat(planetEmissiveControl.value).toFixed(2);
+            if (bloomPass) {
+                bloomStrengthValueDisplay.textContent = bloomPass.strength.toFixed(1);
+                bloomRadiusValueDisplay.textContent = bloomPass.radius.toFixed(2);
+                bloomThresholdValueDisplay.textContent = bloomPass.threshold.toFixed(2);
+            } else {
+                 bloomStrengthValueDisplay.textContent = parseFloat(bloomStrengthControl.value).toFixed(1);
+                 bloomRadiusValueDisplay.textContent = parseFloat(bloomRadiusControl.value).toFixed(2);
+                 bloomThresholdValueDisplay.textContent = parseFloat(bloomThresholdControl.value).toFixed(2);
+            }
+        }
+        
+        initializeUIDisplay();
+        animate();
+
+        // ウィンドウリサイズ対応
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            if (composer) {
+                composer.setSize(window.innerWidth, window.innerHeight);
+            }
+        });
+
+    </script>
+</body>
+</html>
